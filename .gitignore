@@ -211,6 +211,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Derived local vector index
+data/chroma/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

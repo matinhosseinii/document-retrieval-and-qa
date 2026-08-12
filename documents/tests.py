@@ -84,6 +84,14 @@ class DocumentApiTests(TemporaryMediaTestCase):
         super().setUp()
         self.client = APIClient()
         self.list_url = reverse("document-list")
+        self.index_document = patch("documents.views.index_document").start()
+        self.update_document_title = patch(
+            "documents.views.update_document_title"
+        ).start()
+        self.delete_document_index = patch(
+            "documents.views.delete_document_index"
+        ).start()
+        self.addCleanup(patch.stopall)
 
     def create_document(self, title="API document", text="Original content"):
         response = self.client.post(
@@ -100,6 +108,7 @@ class DocumentApiTests(TemporaryMediaTestCase):
         document = Document.objects.get(pk=response.data["id"])
         self.assertEqual(document.content, "API متن")
         self.assertEqual(response.data["content"], "API متن")
+        self.index_document.assert_called_once_with(document)
 
     def test_list_and_retrieve_documents(self):
         created = self.create_document(title="Listed", text="List content")
@@ -120,6 +129,7 @@ class DocumentApiTests(TemporaryMediaTestCase):
         document = Document.objects.get(pk=created.data["id"])
         original_file_name = document.file.name
         detail_url = reverse("document-detail", args=[document.pk])
+        self.index_document.reset_mock()
 
         with patch("documents.models.validate_and_extract_docx") as extractor:
             response = self.client.patch(
@@ -132,10 +142,13 @@ class DocumentApiTests(TemporaryMediaTestCase):
         self.assertEqual(document.title, "Renamed")
         self.assertEqual(document.file.name, original_file_name)
         self.assertEqual(document.content, "Unchanged content")
+        self.index_document.assert_not_called()
+        self.update_document_title.assert_called_once_with(document)
 
     def test_replacing_file_updates_extracted_content(self):
         created = self.create_document(text="Old content")
         detail_url = reverse("document-detail", args=[created.data["id"]])
+        self.index_document.reset_mock()
 
         response = self.client.patch(
             detail_url,
@@ -147,6 +160,7 @@ class DocumentApiTests(TemporaryMediaTestCase):
         document = Document.objects.get(pk=created.data["id"])
         self.assertEqual(document.content, "New\nمحتوا")
         self.assertIn("replacement", document.file.name)
+        self.index_document.assert_called_once_with(document)
 
     def test_same_named_replacement_still_updates_content(self):
         created = self.create_document(text="Old same-name content")
@@ -165,6 +179,7 @@ class DocumentApiTests(TemporaryMediaTestCase):
 
     def test_delete_document(self):
         created = self.create_document()
+        self.delete_document_index.reset_mock()
 
         response = self.client.delete(
             reverse("document-detail", args=[created.data["id"]])
@@ -172,6 +187,7 @@ class DocumentApiTests(TemporaryMediaTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Document.objects.filter(pk=created.data["id"]).exists())
+        self.delete_document_index.assert_called_once_with(created.data["id"])
 
     def test_non_docx_upload_returns_clear_400(self):
         response = self.client.post(
@@ -213,6 +229,14 @@ class DocumentAdminTests(TemporaryMediaTestCase):
             username="admin", email="admin@example.com", password="password"
         )
         self.client.force_login(self.admin_user)
+        self.index_document = patch("documents.admin.index_document").start()
+        self.update_document_title = patch(
+            "documents.admin.update_document_title"
+        ).start()
+        self.delete_document_index = patch(
+            "documents.admin.delete_document_index"
+        ).start()
+        self.addCleanup(patch.stopall)
 
     def test_admin_upload_extracts_content(self):
         response = self.client.post(
@@ -226,6 +250,60 @@ class DocumentAdminTests(TemporaryMediaTestCase):
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         document = Document.objects.get()
         self.assertEqual(document.content, "Admin content\nفارسی")
+        self.index_document.assert_called_once_with(document)
+
+    def test_admin_title_update_only_updates_index_metadata(self):
+        document = Document.objects.create(
+            title="Old admin title",
+            file=make_docx_upload(paragraphs=["Stable content"]),
+        )
+
+        response = self.client.post(
+            reverse("admin:documents_document_change", args=[document.pk]),
+            {"title": "New admin title"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        document.refresh_from_db()
+        self.assertEqual(document.title, "New admin title")
+        self.index_document.assert_not_called()
+        self.update_document_title.assert_called_once_with(document)
+
+    def test_admin_file_update_reindexes_extracted_content(self):
+        document = Document.objects.create(
+            title="Admin replacement",
+            file=make_docx_upload(paragraphs=["Old admin content"]),
+        )
+
+        response = self.client.post(
+            reverse("admin:documents_document_change", args=[document.pk]),
+            {
+                "title": document.title,
+                "file": make_docx_upload("admin-new.docx", ["New admin content"]),
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        document.refresh_from_db()
+        self.assertEqual(document.content, "New admin content")
+        self.index_document.assert_called_once_with(document)
+        self.update_document_title.assert_not_called()
+
+    def test_admin_delete_removes_document_index(self):
+        document = Document.objects.create(
+            title="Delete through admin",
+            file=make_docx_upload(paragraphs=["Delete me"]),
+        )
+        document_id = document.pk
+
+        response = self.client.post(
+            reverse("admin:documents_document_delete", args=[document_id]),
+            {"post": "yes"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertFalse(Document.objects.filter(pk=document_id).exists())
+        self.delete_document_index.assert_called_once_with(document_id)
 
     def test_admin_malformed_upload_is_a_form_error(self):
         response = self.client.post(

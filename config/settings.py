@@ -79,6 +79,17 @@ STATIC_URL = "static/"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+DOCUMENT_CHUNK_SIZE = int(os.environ.get("DOCUMENT_CHUNK_SIZE", "800"))
+DOCUMENT_CHUNK_OVERLAP = int(os.environ.get("DOCUMENT_CHUNK_OVERLAP", "120"))
+EMBEDDING_MODEL_NAME = os.environ.get(
+    "EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-small"
+)
+EMBEDDING_DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
+CHROMA_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION_NAME", "documents")
+CHROMA_PERSIST_DIRECTORY = Path(
+    os.environ.get("CHROMA_PERSIST_DIRECTORY", BASE_DIR / "data" / "chroma")
+)
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
