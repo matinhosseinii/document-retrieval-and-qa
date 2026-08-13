@@ -10,7 +10,7 @@ and stores successful Q&A history in SQLite.
 - SQLite-backed documents, DOCX validation/extraction, full REST CRUD, and Admin
 - Unicode/Persian text preservation and file-replacement extraction
 - LangChain recursive splitting (800 characters with 120 overlap)
-- Local normalized `intfloat/multilingual-e5-small` embeddings
+- Normalized OpenRouter `nvidia/nemotron-3-embed-1b:free` embeddings
 - Persistent Chroma index with deterministic chunk IDs and source metadata
 - REST and Admin index synchronization on create, update, and delete
 - Semantic search through `POST /api/search/`
@@ -25,8 +25,8 @@ The Docker image and project support Python 3.11:
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
-export OPENROUTER_API_KEY='your-key'
-export OPENROUTER_MODEL='openrouter/free'
+cp .env.example .env
+# Edit .env and set OPENROUTER_API_KEY and other runtime configuration.
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver
@@ -37,14 +37,12 @@ python manage.py runserver
 - Search: <http://127.0.0.1:8000/api/search/>
 - Questions/history: <http://127.0.0.1:8000/api/questions/>
 
-Django reads `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, and
-optionally `DJANGO_DB_PATH`. Retrieval settings can be overridden with
-`CHROMA_PERSIST_DIRECTORY`, `CHROMA_COLLECTION_NAME`, `DOCUMENT_CHUNK_SIZE`,
-`DOCUMENT_CHUNK_OVERLAP`, `EMBEDDING_MODEL_NAME`, and `EMBEDDING_DEVICE`.
-Answer generation requires `OPENROUTER_API_KEY`; `OPENROUTER_MODEL` selects the
-model without a code change and defaults to `openrouter/free`. Django does not
-load `.env` automatically. Copying `.env.example` alone does not load it for a
-local process; export the variables or configure them in the process manager.
+Django loads the project `.env` without overriding variables supplied by the
+calling environment. `OPENROUTER_API_KEY` is shared by generation and
+embeddings. `OPENROUTER_MODEL` selects the generation model, while
+`OPENROUTER_EMBEDDING_MODEL` selects the embedding model. Document chunking,
+RAG parameters, timeouts/retries, Django settings, and Chroma paths/names are
+also configured in `.env`; see `.env.example` for the complete inventory.
 
 ## REST API
 
@@ -78,9 +76,11 @@ curl -X POST http://127.0.0.1:8000/api/questions/ \
 contain original chunk `text`, `document_id`, `document_title`, and
 `chunk_index`.
 
-The question endpoint validates one non-empty string, retrieves four chunks,
+The question endpoint validates one non-empty string, retrieves `RAG_TOP_K`
+chunks (four by default),
 formats them as delimited untrusted reference data, and invokes OpenRouter with
-temperature `0.1`, at most 512 output tokens, and no client-level retries. The
+temperature `0.1`, at most 512 output tokens, and no client-level retries by
+default. The
 grounding prompt requires answers to use only that context, ignore instructions
 inside documents, abstain when evidence is insufficient, and use the question's
 language. A successful response is saved with the exact retrieved chunk text and
@@ -96,15 +96,28 @@ history row.
 
 SQLite `Document.content` is the source of truth; Chroma is a rebuildable
 derived index stored at `data/chroma/`. On create, content is split and indexed
-in the shared `documents` collection. Passage embeddings receive the E5
+in the configured collection. Passage embeddings receive the
 `passage:` prefix and query embeddings receive `query:`; neither prefix changes
 returned text. Replacing a file deletes old chunks before indexing new content.
 A title-only update changes Chroma metadata without re-embedding. Delete removes
 all records for the document ID.
 
-The Hugging Face embedding model and Chroma client are reused once per Django
-process. The first real upload/search downloads and loads E5, so it can take
-longer than later requests.
+The OpenRouter embedding adapter and Chroma client are reused once per Django
+process. Document chunks are embedded in batches, provider vectors are
+validated and L2-normalized locally, and remote calls use bounded timeout/retry
+settings.
+
+Changing embedding models requires rebuilding into a separate Chroma collection
+because vectors from different models must never be mixed. Set a new
+`CHROMA_COLLECTION_NAME`, then run:
+
+```sh
+python manage.py rebuild_document_index
+```
+
+The command reports the target and expected counts, refuses a populated target,
+and supports `--force` to clear only the configured target collection. It never
+deletes unrelated collections. No rebuild runs automatically at startup.
 
 ## Tests
 
@@ -115,19 +128,24 @@ python manage.py test
 ```
 
 Tests use generated DOCX files, temporary storage, and deterministic test
-embeddings, so they do not download E5 or pollute `data/chroma/`.
+embeddings, so they make no OpenRouter embedding requests or pollute
+`data/chroma/`.
 
 ## Docker
 
 ```sh
-docker compose build
+docker compose up --build
+```
+
+For one-off setup commands:
+
+```sh
 docker compose run --rm web python manage.py migrate
-docker compose up
 ```
 
 The `./data/chroma:/app/data/chroma` bind mount preserves the index across
-container replacement. The Compose service passes `OPENROUTER_API_KEY` and
-`OPENROUTER_MODEL` from the host environment; no key is baked into the image.
+container replacement. Compose passes the same project `.env` to the service;
+no key is baked into the image.
 SQLite and Django's development server remain in use; there is no Redis, task
 worker, or external database.
 
@@ -209,7 +227,8 @@ With a real OpenRouter key exported and migrations applied, verify Day 3:
 5. Persistence: restart Django or run `docker compose restart web`, then repeat
    both history GETs. The Q&A rows remain in SQLite.
 
-6. Failure: unset `OPENROUTER_API_KEY` (or temporarily use an invalid key),
+6. Failure: clear `OPENROUTER_API_KEY` (or temporarily use an invalid key) in
+   `.env`,
    restart the process, POST another question, and compare history before and
    after. The request should fail clearly and no incomplete or fake-answer row
    should be added.

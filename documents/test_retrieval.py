@@ -12,6 +12,11 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from documents.services import indexing, retrieval
+from documents.services.embeddings import (
+    EmbeddingConfigurationError,
+    EmbeddingUpstreamError,
+    OpenRouterEmbeddings,
+)
 
 
 class FakeCollection:
@@ -134,18 +139,90 @@ class IndexingServiceTests(SimpleTestCase):
         self.assertEqual(self.store.records, {})
 
 
-class E5EmbeddingsTests(SimpleTestCase):
-    def test_passage_and_query_prefixes_are_only_applied_at_embedding_boundary(self):
-        delegate = Mock()
-        delegate.embed_documents.return_value = [[1.0, 0.0]]
-        delegate.embed_query.return_value = [1.0, 0.0]
-        embeddings = indexing.E5Embeddings(delegate)
+class OpenRouterEmbeddingsTests(SimpleTestCase):
+    def make_embeddings(self, responses=None, side_effect=None, retries=0):
+        client = Mock()
+        client.embeddings.generate.side_effect = side_effect
+        if responses is not None:
+            client.embeddings.generate.side_effect = None
+            client.embeddings.generate.return_value = SimpleNamespace(data=responses)
+        embeddings = OpenRouterEmbeddings(
+            api_key="test-placeholder-key",
+            model="nvidia/nemotron-3-embed-1b:free",
+            timeout_ms=1234,
+            retries=retries,
+            client=client,
+        )
+        return embeddings, client
 
-        embeddings.embed_documents(["متن اصلی"])
-        embeddings.embed_query("پرسش کاربر")
+    def test_document_batch_prefixes_ordering_and_normalization(self):
+        responses = [
+            SimpleNamespace(index=1, embedding=[0.0, 3.0]),
+            SimpleNamespace(index=0, embedding=[4.0, 0.0]),
+        ]
+        embeddings, client = self.make_embeddings(responses)
 
-        delegate.embed_documents.assert_called_once_with(["passage: متن اصلی"])
-        delegate.embed_query.assert_called_once_with("query: پرسش کاربر")
+        vectors = embeddings.embed_documents(["اول", "دوم"])
+
+        self.assertEqual(vectors, [[1.0, 0.0], [0.0, 1.0]])
+        client.embeddings.generate.assert_called_once_with(
+            model="nvidia/nemotron-3-embed-1b:free",
+            input=["passage: اول", "passage: دوم"],
+            encoding_format="float",
+            retries=None,
+            timeout_ms=1234,
+        )
+
+    def test_query_prefix_and_normalization(self):
+        embeddings, client = self.make_embeddings(
+            [SimpleNamespace(index=0, embedding=[3.0, 4.0])]
+        )
+
+        vector = embeddings.embed_query("پرسش کاربر")
+
+        self.assertEqual(vector, [0.6, 0.8])
+        self.assertEqual(
+            client.embeddings.generate.call_args.kwargs["input"],
+            ["query: پرسش کاربر"],
+        )
+
+    def test_malformed_response_is_translated(self):
+        embeddings, _client = self.make_embeddings([])
+
+        with self.assertRaisesMessage(EmbeddingUpstreamError, "invalid response"):
+            embeddings.embed_documents(["text"])
+
+    def test_zero_and_non_numeric_vectors_are_rejected(self):
+        for vector in ([0.0, 0.0], [1.0, "bad"]):
+            with self.subTest(vector=vector):
+                embeddings, _client = self.make_embeddings(
+                    [SimpleNamespace(index=0, embedding=vector)]
+                )
+                with self.assertRaises(EmbeddingUpstreamError):
+                    embeddings.embed_query("query")
+
+    def test_missing_api_key_is_clear(self):
+        with self.assertRaisesMessage(
+            EmbeddingConfigurationError, "OPENROUTER_API_KEY"
+        ):
+            OpenRouterEmbeddings(
+                api_key="",
+                model="model",
+                timeout_ms=1000,
+                retries=0,
+            )
+
+    @patch("documents.services.embeddings.sleep")
+    def test_provider_failure_is_retried_then_translated(self, sleep_mock):
+        embeddings, client = self.make_embeddings(
+            side_effect=TimeoutError("provider detail"), retries=1
+        )
+
+        with self.assertRaisesMessage(EmbeddingUpstreamError, "temporarily"):
+            embeddings.embed_query("query")
+
+        self.assertEqual(client.embeddings.generate.call_count, 2)
+        sleep_mock.assert_called_once()
 
 
 class RetrievalServiceTests(SimpleTestCase):
@@ -220,6 +297,21 @@ class SearchApiTests(SimpleTestCase):
         self.assertEqual(response.data, {"query": "نیروی انسانی", "results": []})
         search_documents.assert_called_once_with("نیروی انسانی", top_k=4)
 
+    @patch(
+        "documents.views.search_documents",
+        side_effect=EmbeddingUpstreamError("provider detail"),
+    )
+    def test_embedding_failure_returns_controlled_error(self, _search_documents):
+        response = self.client.post(
+            self.url, {"query": "نیروی انسانی"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertEqual(
+            response.data,
+            {"detail": "The embedding provider is temporarily unavailable."},
+        )
+
 
 class KeywordEmbeddings(Embeddings):
     """Tiny deterministic test embedding boundary; it never downloads a model."""
@@ -247,7 +339,7 @@ class PersianChromaIntegrationTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as persist_directory:
             vector_store = Chroma(
                 collection_name=f"test_documents_{uuid4().hex}",
-                embedding_function=indexing.E5Embeddings(KeywordEmbeddings()),
+                embedding_function=KeywordEmbeddings(),
                 persist_directory=persist_directory,
             )
             document = SimpleNamespace(

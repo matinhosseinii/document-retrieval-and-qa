@@ -66,9 +66,10 @@ def generate_answer(question: str, context_snapshot: list[dict]) -> str:
         model = ChatOpenRouter(
             api_key=api_key,
             model=settings.OPENROUTER_MODEL,
-            temperature=0.1,
-            max_tokens=512,
-            max_retries=0,
+            temperature=settings.RAG_TEMPERATURE,
+            max_tokens=settings.RAG_MAX_TOKENS,
+            max_retries=settings.RAG_MAX_RETRIES,
+            timeout=settings.OPENROUTER_GENERATION_TIMEOUT,
         )
         chain = prompt | model | StrOutputParser()
         answer = chain.invoke(

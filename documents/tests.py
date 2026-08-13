@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from documents.models import Document
+from documents.services.embeddings import EmbeddingUpstreamError
 from documents.services.extraction import extract_docx_text
 
 
@@ -110,6 +111,25 @@ class DocumentApiTests(TemporaryMediaTestCase):
         self.assertEqual(response.data["content"], "API متن")
         self.index_document.assert_called_once_with(document)
 
+    def test_create_embedding_failure_is_clear_after_document_save(self):
+        self.index_document.side_effect = EmbeddingUpstreamError("provider detail")
+
+        response = self.client.post(
+            self.list_url,
+            {
+                "title": "Saved but not indexed",
+                "file": make_docx_upload(paragraphs=["Content"]),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(
+            response.data,
+            {"detail": "The embedding provider is temporarily unavailable."},
+        )
+
     def test_list_and_retrieve_documents(self):
         created = self.create_document(title="Listed", text="List content")
 
@@ -161,6 +181,21 @@ class DocumentApiTests(TemporaryMediaTestCase):
         self.assertEqual(document.content, "New\nمحتوا")
         self.assertIn("replacement", document.file.name)
         self.index_document.assert_called_once_with(document)
+
+    def test_file_update_embedding_failure_is_clear_after_document_save(self):
+        created = self.create_document(text="Old content")
+        self.index_document.reset_mock()
+        self.index_document.side_effect = EmbeddingUpstreamError("provider detail")
+
+        response = self.client.patch(
+            reverse("document-detail", args=[created.data["id"]]),
+            {"file": make_docx_upload("replacement.docx", ["New content"])},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        document = Document.objects.get(pk=created.data["id"])
+        self.assertEqual(document.content, "New content")
 
     def test_same_named_replacement_still_updates_content(self):
         created = self.create_document(text="Old same-name content")

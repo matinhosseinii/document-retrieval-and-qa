@@ -3,52 +3,51 @@ from pathlib import Path
 
 from django.conf import settings
 from langchain_chroma import Chroma
-from langchain_core.embeddings import Embeddings
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-
-class E5Embeddings(Embeddings):
-    """Apply the asymmetric prefixes required by multilingual E5 models."""
-
-    def __init__(self, embeddings: Embeddings):
-        self.embeddings = embeddings
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self.embeddings.embed_documents(
-            [f"passage: {text}" for text in texts]
-        )
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embeddings.embed_query(f"query: {text}")
+from documents.services.embeddings import OpenRouterEmbeddings
 
 
 @lru_cache(maxsize=4)
-def _build_embeddings(model_name: str, device: str) -> E5Embeddings:
-    embeddings = HuggingFaceEmbeddings(
-        model_name=model_name,
-        model_kwargs={"device": device},
-        encode_kwargs={"normalize_embeddings": True},
+def _build_embeddings(
+    api_key: str,
+    model_name: str,
+    timeout_ms: int,
+    retries: int,
+) -> OpenRouterEmbeddings:
+    return OpenRouterEmbeddings(
+        api_key=api_key,
+        model=model_name,
+        timeout_ms=timeout_ms,
+        retries=retries,
     )
-    return E5Embeddings(embeddings)
 
 
-def get_embeddings() -> E5Embeddings:
-    """Return a process-reused local embedding model."""
-    return _build_embeddings(settings.EMBEDDING_MODEL_NAME, settings.EMBEDDING_DEVICE)
+def get_embeddings() -> OpenRouterEmbeddings:
+    """Return a process-reused OpenRouter embedding client."""
+    return _build_embeddings(
+        settings.OPENROUTER_API_KEY,
+        settings.OPENROUTER_EMBEDDING_MODEL,
+        settings.OPENROUTER_EMBEDDING_TIMEOUT_MS,
+        settings.OPENROUTER_EMBEDDING_RETRIES,
+    )
 
 
 @lru_cache(maxsize=8)
 def _build_vector_store(
     persist_directory: str,
     collection_name: str,
+    api_key: str,
     model_name: str,
-    device: str,
+    timeout_ms: int,
+    retries: int,
 ) -> Chroma:
     Path(persist_directory).mkdir(parents=True, exist_ok=True)
     return Chroma(
         collection_name=collection_name,
-        embedding_function=_build_embeddings(model_name, device),
+        embedding_function=_build_embeddings(
+            api_key, model_name, timeout_ms, retries
+        ),
         persist_directory=persist_directory,
     )
 
@@ -58,8 +57,10 @@ def get_vector_store() -> Chroma:
     return _build_vector_store(
         str(settings.CHROMA_PERSIST_DIRECTORY),
         settings.CHROMA_COLLECTION_NAME,
-        settings.EMBEDDING_MODEL_NAME,
-        settings.EMBEDDING_DEVICE,
+        settings.OPENROUTER_API_KEY,
+        settings.OPENROUTER_EMBEDDING_MODEL,
+        settings.OPENROUTER_EMBEDDING_TIMEOUT_MS,
+        settings.OPENROUTER_EMBEDDING_RETRIES,
     )
 
 

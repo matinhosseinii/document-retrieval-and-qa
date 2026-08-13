@@ -1,3 +1,5 @@
+from django.conf import settings
+
 from documents.models import Document
 from documents.services.retrieval import search_documents
 from qa.models import QuestionAnswer
@@ -30,7 +32,7 @@ def _create_context_snapshot(retrieval_results: list[dict]) -> list[dict]:
 
 
 def answer_question(question: str) -> QuestionAnswer:
-    retrieval_results = search_documents(question, top_k=4)
+    retrieval_results = search_documents(question, top_k=settings.RAG_TOP_K)
     context_snapshot = _create_context_snapshot(retrieval_results)
     answer = (
         generate_answer(question, context_snapshot)

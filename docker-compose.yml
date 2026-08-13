@@ -4,11 +4,8 @@ services:
     command: python manage.py runserver 0.0.0.0:8000
     ports:
       - "8000:8000"
-    environment:
-      DJANGO_DEBUG: "true"
-      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openrouter/free}"
+    env_file:
+      - .env
     volumes:
       - .:/app
       - ./data/chroma:/app/data/chroma

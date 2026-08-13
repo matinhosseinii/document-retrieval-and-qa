@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from documents.models import Document
+from documents.services.embeddings import EmbeddingUpstreamError
 from qa.models import QuestionAnswer
 from qa.services import generation
 from qa.services.generation import (
@@ -103,6 +104,24 @@ class QuestionAnswerApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
         self.assertEqual(
             response.data, {"detail": "The answer provider is temporarily unavailable."}
+        )
+        self.assertEqual(QuestionAnswer.objects.count(), 0)
+
+    @patch(
+        "qa.services.qa.search_documents",
+        side_effect=EmbeddingUpstreamError("provider detail"),
+    )
+    def test_retrieval_embedding_failure_is_clear_and_saves_nothing(
+        self, _search_documents
+    ):
+        response = self.client.post(
+            self.list_url, {"question": "پرسش"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertEqual(
+            response.data,
+            {"detail": "The embedding provider is temporarily unavailable."},
         )
         self.assertEqual(QuestionAnswer.objects.count(), 0)
 
@@ -256,6 +275,7 @@ class GenerationServiceTests(TestCase):
             temperature=0.1,
             max_tokens=512,
             max_retries=0,
+            timeout=30000,
         )
         self.assertIn("untrusted reference data", captured["messages"][0].content)
         self.assertIn("شرکت ۱۲۰ نفر کارمند دارد.", captured["messages"][1].content)

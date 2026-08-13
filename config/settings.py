@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env", override=False)
 
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY", "django-insecure-development-only-change-me"
@@ -71,7 +74,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", "Asia/Tehran")
 USE_I18N = True
 USE_TZ = True
 
@@ -81,16 +84,30 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DOCUMENT_CHUNK_SIZE = int(os.environ.get("DOCUMENT_CHUNK_SIZE", "800"))
 DOCUMENT_CHUNK_OVERLAP = int(os.environ.get("DOCUMENT_CHUNK_OVERLAP", "120"))
-EMBEDDING_MODEL_NAME = os.environ.get(
-    "EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-small"
+CHROMA_COLLECTION_NAME = os.environ.get(
+    "CHROMA_COLLECTION_NAME", "documents_nemotron3"
 )
-EMBEDDING_DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
-CHROMA_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION_NAME", "documents")
 CHROMA_PERSIST_DIRECTORY = Path(
     os.environ.get("CHROMA_PERSIST_DIRECTORY", BASE_DIR / "data" / "chroma")
 )
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+OPENROUTER_EMBEDDING_MODEL = os.environ.get(
+    "OPENROUTER_EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b:free"
+)
+OPENROUTER_EMBEDDING_TIMEOUT_MS = int(
+    os.environ.get("OPENROUTER_EMBEDDING_TIMEOUT_MS", "30000")
+)
+OPENROUTER_EMBEDDING_RETRIES = int(
+    os.environ.get("OPENROUTER_EMBEDDING_RETRIES", "1")
+)
+OPENROUTER_GENERATION_TIMEOUT = int(
+    os.environ.get("OPENROUTER_GENERATION_TIMEOUT", "30")
+)
+RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "4"))
+RAG_TEMPERATURE = float(os.environ.get("RAG_TEMPERATURE", "0.1"))
+RAG_MAX_TOKENS = int(os.environ.get("RAG_MAX_TOKENS", "512"))
+RAG_MAX_RETRIES = int(os.environ.get("RAG_MAX_RETRIES", "0"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
