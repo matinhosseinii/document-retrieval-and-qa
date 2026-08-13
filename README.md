@@ -1,9 +1,9 @@
 # Document Retrieval and QA
 
-Day 2 adds persistent multilingual semantic retrieval to the existing Django
-DOCX document-management foundation. It indexes extracted content synchronously
-and returns matching source chunks through REST. It does not generate answers
-or call an LLM.
+The project provides Django document management, persistent multilingual
+semantic retrieval, and a simple two-step retrieve-then-generate RAG API. Day 3
+uses the existing retriever as context for grounded answers through OpenRouter
+and stores successful Q&A history in SQLite.
 
 ## Current capabilities
 
@@ -14,6 +14,8 @@ or call an LLM.
 - Persistent Chroma index with deterministic chunk IDs and source metadata
 - REST and Admin index synchronization on create, update, and delete
 - Semantic search through `POST /api/search/`
+- Grounded generation with LangChain's dedicated `ChatOpenRouter` integration
+- SQLite-backed Q&A history and complete retrieved-context snapshots
 
 ## Setup
 
@@ -23,6 +25,8 @@ The Docker image and project support Python 3.11:
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
+export OPENROUTER_API_KEY='your-key'
+export OPENROUTER_MODEL='openrouter/free'
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver
@@ -31,12 +35,16 @@ python manage.py runserver
 - Admin: <http://127.0.0.1:8000/admin/>
 - Documents: <http://127.0.0.1:8000/api/documents/>
 - Search: <http://127.0.0.1:8000/api/search/>
+- Questions/history: <http://127.0.0.1:8000/api/questions/>
 
 Django reads `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, and
 optionally `DJANGO_DB_PATH`. Retrieval settings can be overridden with
 `CHROMA_PERSIST_DIRECTORY`, `CHROMA_COLLECTION_NAME`, `DOCUMENT_CHUNK_SIZE`,
 `DOCUMENT_CHUNK_OVERLAP`, `EMBEDDING_MODEL_NAME`, and `EMBEDDING_DEVICE`.
-Django does not load `.env` automatically.
+Answer generation requires `OPENROUTER_API_KEY`; `OPENROUTER_MODEL` selects the
+model without a code change and defaults to `openrouter/free`. Django does not
+load `.env` automatically. Copying `.env.example` alone does not load it for a
+local process; export the variables or configure them in the process manager.
 
 ## REST API
 
@@ -45,6 +53,9 @@ Django does not load `.env` automatically.
 | `GET` / `POST` | `/api/documents/` | List/upload documents |
 | `GET` / `PUT` / `PATCH` / `DELETE` | `/api/documents/{id}/` | Document CRUD |
 | `POST` | `/api/search/` | Retrieve semantically matching chunks |
+| `POST` | `/api/questions/` | Retrieve, generate, and save an answer |
+| `GET` | `/api/questions/` | List saved Q&A history |
+| `GET` | `/api/questions/{id}/` | Retrieve one saved Q&A item |
 
 Upload and search:
 
@@ -56,12 +67,30 @@ curl -X POST http://127.0.0.1:8000/api/documents/ \
 curl -X POST http://127.0.0.1:8000/api/search/ \
   -H 'Content-Type: application/json' \
   -d '{"query":"چند نفر در شرکت کار می‌کنند؟","top_k":4}'
+
+curl -X POST http://127.0.0.1:8000/api/questions/ \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"نیروی انسانی شرکت چند نفر است؟"}'
 ```
 
 `content` is read-only. Search `query` must be a non-empty JSON string;
 `top_k` defaults to 4 and accepts JSON integers from 1 through 20. Results
 contain original chunk `text`, `document_id`, `document_title`, and
 `chunk_index`.
+
+The question endpoint validates one non-empty string, retrieves four chunks,
+formats them as delimited untrusted reference data, and invokes OpenRouter with
+temperature `0.1`, at most 512 output tokens, and no client-level retries. The
+grounding prompt requires answers to use only that context, ignore instructions
+inside documents, abstain when evidence is insufficient, and use the question's
+language. A successful response is saved with the exact retrieved chunk text and
+metadata in `context_snapshot`. Retrieval distance remains available only from
+`/api/search/`; it is not sent to the LLM or stored in Q&A history.
+
+If retrieval returns no chunks, the API skips OpenRouter and stores a simple
+deterministic no-information answer with an empty snapshot. Missing credentials
+return HTTP 503; provider failures return HTTP 502. Neither failure creates a
+history row.
 
 ## Retrieval architecture
 
@@ -97,10 +126,12 @@ docker compose up
 ```
 
 The `./data/chroma:/app/data/chroma` bind mount preserves the index across
-container replacement. SQLite and Django's development server remain in use;
-there is no Redis, task worker, external database, or API key.
+container replacement. The Compose service passes `OPENROUTER_API_KEY` and
+`OPENROUTER_MODEL` from the host environment; no key is baked into the image.
+SQLite and Django's development server remain in use; there is no Redis, task
+worker, or external database.
 
-## Manual Persian verification
+## Manual Persian retrieval and Q&A verification
 
 Create a representative DOCX and upload it:
 
@@ -132,6 +163,57 @@ rank the ۱۲۰-person fact near the top. `مقر اصلی شرکت کجاست؟
 Tehran fact; `شرکت چه نرم‌افزاری تولید می‌کند؟` the cloud HR system; and
 `مدیرعامل چه کسی است؟` the Nastran Rezaei fact.
 
+With a real OpenRouter key exported and migrations applied, verify Day 3:
+
+1. Grounded factual answer:
+
+   ```sh
+   curl -X POST http://127.0.0.1:8000/api/questions/ \
+     -H 'Content-Type: application/json' \
+     -d '{"question":"نیروی انسانی شرکت چند نفر است؟"}'
+   ```
+
+   The answer should mention `۱۲۰` and `context_snapshot` should contain the
+   retrieved employee chunk.
+
+2. Semantic retrieval plus generation:
+
+   ```sh
+   curl -X POST http://127.0.0.1:8000/api/questions/ \
+     -H 'Content-Type: application/json' \
+     -d '{"question":"مقر اصلی مجموعه کجاست؟"}'
+   ```
+
+   The answer should identify `تهران`.
+
+3. Unsupported question:
+
+   ```sh
+   curl -X POST http://127.0.0.1:8000/api/questions/ \
+     -H 'Content-Type: application/json' \
+     -d '{"question":"قیمت سهام شرکت چقدر است؟"}'
+   ```
+
+   The model should say the available documents are insufficient, must not
+   invent a price, and the normal retrieved snapshot should still be present.
+
+4. History: take a successful response ID and run:
+
+   ```sh
+   curl http://127.0.0.1:8000/api/questions/
+   curl http://127.0.0.1:8000/api/questions/ID/
+   ```
+
+   Both responses should retain the question, answer, and context snapshot.
+
+5. Persistence: restart Django or run `docker compose restart web`, then repeat
+   both history GETs. The Q&A rows remain in SQLite.
+
+6. Failure: unset `OPENROUTER_API_KEY` (or temporarily use an invalid key),
+   restart the process, POST another question, and compare history before and
+   after. The request should fail clearly and no incomplete or fake-answer row
+   should be added.
+
 Lifecycle checks:
 
 1. Persistence: confirm search, run `docker compose restart web`, then repeat
@@ -154,6 +236,12 @@ Lifecycle checks:
 - Indexing and model loading are synchronous, so first use and large uploads
   increase request latency.
 - Semantic search returns nearest neighbors whenever the collection is not
-  empty; there is no relevance threshold or LLM grounding decision yet.
-- There is no answer generation, reranking, hybrid retrieval, or background
-  indexing.
+  empty; there is no relevance threshold or reranking layer. Unsupported-answer
+  handling therefore relies on the grounding prompt.
+- `openrouter/free` availability, latency, limits, and selected backing model can
+  change. Set `OPENROUTER_MODEL` to a specific available model when stable model
+  behavior is required.
+- No-context responses use a fixed English message; no language-detection
+  dependency is included for this retrieval edge case.
+- There is no conversation memory, streaming, hybrid retrieval, provider
+  fallback, application-level retries, or background indexing.

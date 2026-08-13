@@ -89,6 +89,8 @@ CHROMA_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION_NAME", "documents")
 CHROMA_PERSIST_DIRECTORY = Path(
     os.environ.get("CHROMA_PERSIST_DIRECTORY", BASE_DIR / "data" / "chroma")
 )
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
