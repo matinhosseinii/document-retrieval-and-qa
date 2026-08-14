@@ -19,7 +19,9 @@ and stores successful Q&A history in SQLite.
 
 ## Setup
 
-The Docker image and project support Python 3.11:
+The Docker image targets Python 3.13, matching the tested local development
+environment. Prerequisites are Python 3.13 for local setup or Docker with the
+Compose plugin, plus an OpenRouter API key for real embedding and generation:
 
 ```sh
 python -m venv .venv
@@ -43,6 +45,9 @@ embeddings. `OPENROUTER_MODEL` selects the generation model, while
 `OPENROUTER_EMBEDDING_MODEL` selects the embedding model. Document chunking,
 RAG parameters, timeouts/retries, Django settings, and Chroma paths/names are
 also configured in `.env`; see `.env.example` for the complete inventory.
+
+Full endpoint contracts, response examples, and errors are documented in
+[`docs/API.md`](docs/API.md).
 
 ## REST API
 
@@ -73,8 +78,9 @@ curl -X POST http://127.0.0.1:8000/api/questions/ \
 
 `content` is read-only. Search `query` must be a non-empty JSON string;
 `top_k` defaults to 4 and accepts JSON integers from 1 through 20. Results
-contain original chunk `text`, `document_id`, `document_title`, and
-`chunk_index`.
+contain original chunk `text`, `document_id`, `document_title`, `chunk_index`,
+and `distance`. Distance is a vector-distance score, not a probability; lower
+values represent nearer vectors within the configured embedding space.
 
 The question endpoint validates one non-empty string, retrieves `RAG_TOP_K`
 chunks (four by default),
@@ -98,9 +104,11 @@ SQLite `Document.content` is the source of truth; Chroma is a rebuildable
 derived index stored at `data/chroma/`. On create, content is split and indexed
 in the configured collection. Passage embeddings receive the
 `passage:` prefix and query embeddings receive `query:`; neither prefix changes
-returned text. Replacing a file deletes old chunks before indexing new content.
-A title-only update changes Chroma metadata without re-embedding. Delete removes
-all records for the document ID.
+returned text. Replacing a file computes all new embeddings before upserting the
+replacement chunks and deleting obsolete old IDs, so an embedding-provider
+failure leaves the previous usable index intact. A title-only update changes
+Chroma metadata without re-embedding. Delete removes all records for the
+document ID.
 
 The OpenRouter embedding adapter and Chroma client are reused once per Django
 process. Document chunks are embedded in batches, provider vectors are
@@ -134,45 +142,33 @@ embeddings, so they make no OpenRouter embedding requests or pollute
 ## Docker
 
 ```sh
+cp .env.example .env
+# Edit .env and set OPENROUTER_API_KEY and any desired model settings.
 docker compose up --build
 ```
 
-For one-off setup commands:
+Container startup runs database migrations before starting Django's development
+server. To use Admin, create a superuser separately:
 
 ```sh
-docker compose run --rm web python manage.py migrate
+docker compose run --rm web python manage.py createsuperuser
 ```
 
 The `./data/chroma:/app/data/chroma` bind mount preserves the index across
 container replacement. Compose passes the same project `.env` to the service;
 no key is baked into the image.
 SQLite and Django's development server remain in use; there is no Redis, task
-worker, or external database.
+worker, or external database. Startup does not create a superuser, load sample
+data, or rebuild Chroma.
 
 ## Manual Persian retrieval and Q&A verification
 
-Create a representative DOCX and upload it:
+Upload the intentional delivery sample:
 
 ```sh
-python - <<'PY'
-from docx import Document
-
-paragraphs = [
-    "شرکت آریا در سال ۱۳۹۵ تأسیس شد و دفتر مرکزی آن در تهران قرار دارد.",
-    "در حال حاضر شرکت آریا ۱۲۰ نفر کارمند دارد. از این تعداد، ۶۵ نفر در واحد فنی فعالیت می‌کنند.",
-    "محصول اصلی شرکت یک سامانه مدیریت منابع انسانی ابری است.",
-    "درآمد شرکت در سال ۱۴۰۴ حدود ۳۵ میلیارد تومان بوده است.",
-    "مدیرعامل شرکت نسترن رضایی است.",
-]
-document = Document()
-for paragraph in paragraphs:
-    document.add_paragraph(paragraph)
-document.save("/tmp/aria.docx")
-PY
-
 curl -X POST http://127.0.0.1:8000/api/documents/ \
   -F 'title=گزارش شرکت آریا' \
-  -F 'file=@/tmp/aria.docx'
+  -F 'file=@sample_data/aria_company.docx'
 ```
 
 Note the returned ID and vary `query` in the search request above. Both
@@ -181,7 +177,8 @@ rank the ۱۲۰-person fact near the top. `مقر اصلی شرکت کجاست؟
 Tehran fact; `شرکت چه نرم‌افزاری تولید می‌کند؟` the cloud HR system; and
 `مدیرعامل چه کسی است؟` the Nastran Rezaei fact.
 
-With a real OpenRouter key exported and migrations applied, verify Day 3:
+With a real OpenRouter key configured in `.env` and migrations applied, verify
+the RAG workflow:
 
 1. Grounded factual answer:
 
@@ -254,6 +251,11 @@ Lifecycle checks:
   footers, and images are unsupported. Uploaded media files are not cleaned up.
 - Indexing and model loading are synchronous, so first use and large uploads
   increase request latency.
+- Embedding and answer generation depend on remote OpenRouter availability,
+  latency, quotas, and model availability.
+- SQLite is the source of truth and Chroma is derived state; they do not share a
+  transaction. A failed replacement embedding can leave new SQLite content with
+  the previous usable Chroma index until a retry or explicit rebuild.
 - Semantic search returns nearest neighbors whenever the collection is not
   empty; there is no relevance threshold or reranking layer. Unsupported-answer
   handling therefore relies on the grounding prompt.

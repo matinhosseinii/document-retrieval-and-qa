@@ -1,6 +1,7 @@
 import tempfile
 from io import BytesIO
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -8,10 +9,13 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from docx import Document as DocxDocument
+from langchain_chroma import Chroma
+from langchain_core.embeddings import Embeddings
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from documents.models import Document
+from documents.services import indexing
 from documents.services.embeddings import EmbeddingUpstreamError
 from documents.services.extraction import extract_docx_text
 
@@ -30,6 +34,19 @@ def make_docx_upload(name="example.docx", paragraphs=None):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ),
     )
+
+
+class ControlledEmbeddings(Embeddings):
+    def __init__(self):
+        self.error = None
+
+    def embed_documents(self, texts):
+        if self.error:
+            raise self.error
+        return [[1.0, float(index + 1)] for index, _text in enumerate(texts)]
+
+    def embed_query(self, text):
+        return [1.0, 0.0]
 
 
 class TemporaryMediaTestCase(TestCase):
@@ -184,8 +201,32 @@ class DocumentApiTests(TemporaryMediaTestCase):
 
     def test_file_update_embedding_failure_is_clear_after_document_save(self):
         created = self.create_document(text="Old content")
+        embeddings = ControlledEmbeddings()
+        temporary_chroma = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_chroma.cleanup)
+        vector_store = Chroma(
+            collection_name=f"test_replacement_{uuid4().hex}",
+            embedding_function=embeddings,
+            persist_directory=temporary_chroma.name,
+        )
+        vector_store_patch = patch(
+            "documents.services.indexing.get_vector_store", return_value=vector_store
+        )
+        embeddings_patch = patch(
+            "documents.services.indexing.get_embeddings", return_value=embeddings
+        )
+        vector_store_patch.start()
+        embeddings_patch.start()
+        self.addCleanup(vector_store_patch.stop)
+        self.addCleanup(embeddings_patch.stop)
+
+        document = Document.objects.get(pk=created.data["id"])
+        indexing.index_document(document)
+        old_records = vector_store.get(where={"document_id": document.pk})
+
         self.index_document.reset_mock()
-        self.index_document.side_effect = EmbeddingUpstreamError("provider detail")
+        self.index_document.side_effect = indexing.index_document
+        embeddings.error = EmbeddingUpstreamError("provider detail")
 
         response = self.client.patch(
             reverse("document-detail", args=[created.data["id"]]),
@@ -194,8 +235,11 @@ class DocumentApiTests(TemporaryMediaTestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
-        document = Document.objects.get(pk=created.data["id"])
+        document.refresh_from_db()
         self.assertEqual(document.content, "New content")
+        self.assertEqual(
+            vector_store.get(where={"document_id": document.pk}), old_records
+        )
 
     def test_same_named_replacement_still_updates_content(self):
         created = self.create_document(text="Old same-name content")

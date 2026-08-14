@@ -27,11 +27,23 @@ class FakeCollection:
         for record_id, metadata in zip(ids, metadatas, strict=True):
             self.store.records[record_id]["metadata"] = metadata
 
+    def upsert(self, ids, embeddings, metadatas, documents):
+        self.store.events.append("upsert")
+        for record_id, embedding, metadata, document in zip(
+            ids, embeddings, metadatas, documents, strict=True
+        ):
+            self.store.records[record_id] = {
+                "text": document,
+                "metadata": metadata,
+                "embedding": embedding,
+            }
+
 
 class FakeVectorStore:
     def __init__(self):
         self.records = {}
         self.add_calls = 0
+        self.events = []
         self.search_results = []
         self.last_search = None
         self._collection = FakeCollection(self)
@@ -55,6 +67,7 @@ class FakeVectorStore:
         }
 
     def delete(self, ids):
+        self.events.append(("delete", set(ids)))
         for record_id in ids:
             self.records.pop(record_id, None)
 
@@ -63,15 +76,33 @@ class FakeVectorStore:
         return self.search_results[:k]
 
 
+class FakeEmbeddings:
+    def __init__(self):
+        self.error = None
+        self.calls = 0
+
+    def embed_documents(self, texts):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return [[float(index), 1.0] for index, _text in enumerate(texts)]
+
+
 @override_settings(DOCUMENT_CHUNK_SIZE=30, DOCUMENT_CHUNK_OVERLAP=5)
 class IndexingServiceTests(SimpleTestCase):
     def setUp(self):
         self.store = FakeVectorStore()
+        self.embeddings = FakeEmbeddings()
         self.vector_store_patch = patch(
             "documents.services.indexing.get_vector_store", return_value=self.store
         )
+        self.embeddings_patch = patch(
+            "documents.services.indexing.get_embeddings", return_value=self.embeddings
+        )
         self.vector_store_patch.start()
+        self.embeddings_patch.start()
         self.addCleanup(self.vector_store_patch.stop)
+        self.addCleanup(self.embeddings_patch.stop)
 
     def test_indexing_uses_deterministic_ids_metadata_and_unicode_text(self):
         document = SimpleNamespace(
@@ -98,7 +129,7 @@ class IndexingServiceTests(SimpleTestCase):
             )
         self.assertIn("فارسی", " ".join(r["text"] for r in self.store.records.values()))
 
-    def test_file_replacement_removes_all_old_chunks_before_reindexing(self):
+    def test_file_replacement_upserts_new_chunks_then_removes_obsolete_ids(self):
         document = SimpleNamespace(
             pk=8,
             title="Employees",
@@ -106,25 +137,61 @@ class IndexingServiceTests(SimpleTestCase):
         )
         indexing.index_document(document)
         self.assertGreater(len(self.store.records), 1)
+        old_ids = set(self.store.records)
+        self.store.events.clear()
 
         document.content = "New fact: 250 employees."
         indexing.index_document(document)
 
         self.assertEqual(list(self.store.records), ["document-8-chunk-0"])
+        self.assertEqual(
+            self.store.records["document-8-chunk-0"]["metadata"],
+            {
+                "document_id": 8,
+                "document_title": "Employees",
+                "chunk_index": 0,
+            },
+        )
         indexed_text = " ".join(r["text"] for r in self.store.records.values())
         self.assertIn("250 employees", indexed_text)
         self.assertNotIn("Old content", indexed_text)
+        self.assertEqual(self.store.events[0], "upsert")
+        self.assertEqual(
+            self.store.events[1],
+            ("delete", old_ids - {"document-8-chunk-0"}),
+        )
+
+    def test_embedding_failure_preserves_existing_document_records(self):
+        document = SimpleNamespace(
+            pk=11,
+            title="Employees",
+            content="Old healthy content " * 10,
+        )
+        indexing.index_document(document)
+        old_records = {
+            record_id: {**record, "metadata": dict(record["metadata"])}
+            for record_id, record in self.store.records.items()
+        }
+        self.store.events.clear()
+        self.embeddings.error = EmbeddingUpstreamError("provider unavailable")
+        document.content = "Replacement content"
+
+        with self.assertRaises(EmbeddingUpstreamError):
+            indexing.index_document(document)
+
+        self.assertEqual(self.store.records, old_records)
+        self.assertEqual(self.store.events, [])
 
     def test_title_update_changes_metadata_without_reembedding(self):
         document = SimpleNamespace(pk=9, title="Old title", content="Stable text")
         indexing.index_document(document)
-        add_calls = self.store.add_calls
+        embedding_calls = self.embeddings.calls
 
         document.title = "New title"
         updated_count = indexing.update_document_title(document)
 
         self.assertEqual(updated_count, 1)
-        self.assertEqual(self.store.add_calls, add_calls)
+        self.assertEqual(self.embeddings.calls, embedding_calls)
         self.assertEqual(
             self.store.records["document-9-chunk-0"]["metadata"]["document_title"],
             "New title",
@@ -337,9 +404,10 @@ class KeywordEmbeddings(Embeddings):
 class PersianChromaIntegrationTests(SimpleTestCase):
     def test_representative_persian_query_returns_relevant_persistent_chunk(self):
         with tempfile.TemporaryDirectory() as persist_directory:
+            embeddings = KeywordEmbeddings()
             vector_store = Chroma(
                 collection_name=f"test_documents_{uuid4().hex}",
-                embedding_function=KeywordEmbeddings(),
+                embedding_function=embeddings,
                 persist_directory=persist_directory,
             )
             document = SimpleNamespace(
@@ -352,9 +420,15 @@ class PersianChromaIntegrationTests(SimpleTestCase):
                 ),
             )
 
-            with patch(
-                "documents.services.indexing.get_vector_store",
-                return_value=vector_store,
+            with (
+                patch(
+                    "documents.services.indexing.get_vector_store",
+                    return_value=vector_store,
+                ),
+                patch(
+                    "documents.services.indexing.get_embeddings",
+                    return_value=embeddings,
+                ),
             ):
                 indexing.index_document(document)
                 stored = vector_store.get(where={"document_id": 11})

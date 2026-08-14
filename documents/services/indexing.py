@@ -92,9 +92,12 @@ def delete_document_index(document_id: int) -> None:
 
 def index_document(document) -> int:
     """Replace a document's derived Chroma records with its current content."""
-    delete_document_index(document.pk)
+    vector_store = get_vector_store()
+    existing_ids = set(_ids_for_document(document.pk))
     chunks = split_document_content(document.content)
     if not chunks:
+        if existing_ids:
+            vector_store.delete(ids=list(existing_ids))
         return 0
 
     metadatas = [
@@ -106,7 +109,21 @@ def index_document(document) -> int:
         for index, _chunk in enumerate(chunks)
     ]
     ids = [chunk_id(document.pk, index) for index, _chunk in enumerate(chunks)]
-    get_vector_store().add_texts(texts=chunks, metadatas=metadatas, ids=ids)
+    embeddings = get_embeddings().embed_documents(chunks)
+
+    # LangChain Chroma's public add_texts() always embeds texts itself. Use the
+    # underlying public Chroma upsert operation so a completed embedding batch
+    # can replace deterministic IDs without a second provider request.
+    vector_store._collection.upsert(
+        ids=ids,
+        embeddings=embeddings,
+        metadatas=metadatas,
+        documents=chunks,
+    )
+
+    obsolete_ids = existing_ids - set(ids)
+    if obsolete_ids:
+        vector_store.delete(ids=list(obsolete_ids))
     return len(chunks)
 
 
