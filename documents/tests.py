@@ -156,8 +156,11 @@ class DocumentApiTests(TemporaryMediaTestCase):
         )
 
         self.assertEqual(list_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(list_response.data), 1)
-        self.assertEqual(list_response.data[0]["title"], "Listed")
+        self.assertEqual(list_response.data["count"], 1)
+        self.assertIsNone(list_response.data["next"])
+        self.assertIsNone(list_response.data["previous"])
+        self.assertEqual(len(list_response.data["results"]), 1)
+        self.assertEqual(list_response.data["results"][0]["title"], "Listed")
         self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
         self.assertEqual(detail_response.data["content"], "List content")
 

@@ -198,13 +198,16 @@ class QuestionAnswerHistoryTests(TestCase):
         response = self.client.get(reverse("question-answer-list"))
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertIsNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
         self.assertEqual(
-            [item["id"] for item in response.data],
+            [item["id"] for item in response.data["results"]],
             [self.newer.pk, self.older.pk],
         )
-        self.assertEqual(response.data[0]["answer"], "۱۲۰ نفر")
+        self.assertEqual(response.data["results"][0]["answer"], "۱۲۰ نفر")
         self.assertEqual(
-            response.data[0]["context_snapshot"],
+            response.data["results"][0]["context_snapshot"],
             [{"text": "شرکت ۱۲۰ نفر کارمند دارد."}],
         )
 
