@@ -1,165 +1,285 @@
-# REST API
+# API Reference
 
-The API is available below `/api/` and currently requires no authentication.
-JSON examples use `http://127.0.0.1:8000` as the base URL.
+The API is available at `http://127.0.0.1:8000/api/`. It requires no
+authentication. Requests and responses use JSON unless an endpoint specifies
+`multipart/form-data`.
 
-## Common representations
-
-A Document response contains:
+List endpoints use page-number pagination with five items per page. Pass an
+optional positive integer as `?page=2`. Paginated responses have this shape:
 
 ```json
 {
-  "id": 1,
-  "title": "گزارش شرکت آریا",
-  "file": "http://127.0.0.1:8000/media/documents/aria_company.docx",
-  "content": "شرکت آریا در سال ۱۳۹۵ تأسیس شد.",
-  "created_at": "2026-08-13T12:00:00+03:30",
-  "updated_at": "2026-08-13T12:00:00+03:30"
+  "count": 7,
+  "next": "http://127.0.0.1:8000/api/documents/?page=2",
+  "previous": null,
+  "results": []
 }
 ```
 
-`content`, `id`, `created_at`, and `updated_at` are read-only. The exact `file`
-URL and timestamps depend on the request and server configuration.
+## `GET /api/documents/`
 
-A QuestionAnswer response contains:
+Lists documents in newest-first order.
+
+### Request
+
+Query parameters:
+
+- `page` (optional integer): Page number.
+
+### Response
+
+Status: `200 OK`
 
 ```json
 {
-  "id": 1,
-  "question": "نیروی انسانی شرکت چند نفر است؟",
-  "answer": "شرکت آریا ۱۲۰ نفر کارمند دارد.",
-  "context_snapshot": [
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
     {
-      "document_id": 1,
-      "document_title": "گزارش شرکت آریا",
-      "document_snapshot_updated_at": "2026-08-13T12:00:00+03:30",
-      "chunk_index": 0,
-      "text": "در حال حاضر شرکت آریا ۱۲۰ نفر کارمند دارد."
+      "id": 1,
+      "title": "Company profile",
+      "file": "http://127.0.0.1:8000/media/documents/company.docx",
+      "content": "The company office is in Tehran.",
+      "created_at": "2026-08-15T10:00:00+03:30",
+      "updated_at": "2026-08-15T10:00:00+03:30"
     }
-  ],
-  "created_at": "2026-08-13T12:01:00+03:30"
+  ]
 }
 ```
 
-## Documents
+### Errors
 
-### `GET /api/documents/`
+- `404 Not Found` if `page` is invalid or outside the available range.
 
-Lists Documents in newest-first order. No request body is required.
+## `POST /api/documents/`
 
-- Success: `200 OK` with a JSON array of Document objects.
+Uploads a DOCX document, extracts its paragraph text, and indexes it for search.
 
-```sh
-curl http://127.0.0.1:8000/api/documents/
-```
+### Request
 
-### `POST /api/documents/`
+Content type: `multipart/form-data`
 
-Uploads and indexes a DOCX document.
-
-- Content type: `multipart/form-data`
-- Fields: `title` (required string), `file` (required `.docx` file)
-- Success: `201 Created` with the created Document.
-- Errors: `400 Bad Request` for missing/invalid fields, unsupported extensions,
-  or a corrupt DOCX; `503 Service Unavailable` when embedding configuration is
-  missing; `502 Bad Gateway` when the embedding provider fails.
-
-The SQLite Document remains saved if indexing fails; Chroma is derived state and
-can be recovered with `python manage.py rebuild_document_index`.
+- `title` (required string, maximum 255 characters): Document title.
+- `file` (required file): A valid file with a `.docx` extension.
 
 ```sh
 curl -X POST http://127.0.0.1:8000/api/documents/ \
-  -F 'title=گزارش شرکت آریا' \
-  -F 'file=@sample_data/aria_company.docx'
+  -F 'title=Company profile' \
+  -F 'file=@/path/to/company.docx'
 ```
 
-### `GET /api/documents/{id}/`
+### Response
 
-Returns one Document.
-
-- Success: `200 OK` with a Document object.
-- Error: `404 Not Found` when the ID does not exist.
-
-```sh
-curl http://127.0.0.1:8000/api/documents/1/
-```
-
-### `PUT /api/documents/{id}/`
-
-Fully updates a Document. Send multipart data when replacing the file. Because
-this is a full update, required writable fields must be supplied.
-
-- Content type: `multipart/form-data` or `application/json` when applicable
-- Writable fields: `title`, `file`
-- Success: `200 OK` with the updated Document.
-- Errors: `400 Bad Request`, `404 Not Found`, `503 Service Unavailable` for
-  embedding configuration, or `502 Bad Gateway` for an embedding-provider
-  failure.
-
-```sh
-curl -X PUT http://127.0.0.1:8000/api/documents/1/ \
-  -F 'title=گزارش به‌روز شرکت آریا' \
-  -F 'file=@sample_data/aria_company.docx'
-```
-
-### `PATCH /api/documents/{id}/`
-
-Partially updates a title and/or replaces a DOCX file. Title-only updates modify
-Chroma metadata without re-embedding. File replacement embeds the complete new
-chunk set before replacing the previous usable index.
-
-- Content type: `application/json` for title-only changes or
-  `multipart/form-data` for a file
-- Success: `200 OK` with the updated Document.
-- Errors: `400 Bad Request`, `404 Not Found`, `503 Service Unavailable`, or
-  `502 Bad Gateway` as described above.
-
-```sh
-curl -X PATCH http://127.0.0.1:8000/api/documents/1/ \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"گزارش جدید شرکت آریا"}'
-```
-
-### `DELETE /api/documents/{id}/`
-
-Removes the Document and its indexed chunks.
-
-- Success: `204 No Content` with an empty body.
-- Errors: `404 Not Found`; `503 Service Unavailable` or `502 Bad Gateway` if
-  accessing the configured Chroma collection fails through the handled
-  embedding boundary.
-
-```sh
-curl -X DELETE http://127.0.0.1:8000/api/documents/1/
-```
-
-## Semantic retrieval
-
-### `POST /api/search/`
-
-Retrieves the nearest indexed chunks for a semantic query.
-
-- Content type: `application/json`
-- Fields: `query` (required non-empty string), `top_k` (optional JSON integer
-  from 1 to 20, default 4)
-- Success: `200 OK`
-- Errors: `400 Bad Request` for invalid input; `503 Service Unavailable` when
-  embeddings are not configured; `502 Bad Gateway` when the provider fails.
-
-```sh
-curl -X POST http://127.0.0.1:8000/api/search/ \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"نیروی انسانی شرکت چند نفر است؟","top_k":4}'
-```
+Status: `201 Created`
 
 ```json
 {
-  "query": "نیروی انسانی شرکت چند نفر است؟",
+  "id": 1,
+  "title": "Company profile",
+  "file": "http://127.0.0.1:8000/media/documents/company.docx",
+  "content": "The company office is in Tehran.",
+  "created_at": "2026-08-15T10:00:00+03:30",
+  "updated_at": "2026-08-15T10:00:00+03:30"
+}
+```
+
+`id`, `content`, `created_at`, and `updated_at` are read-only. The file URL,
+extracted content, and timestamps depend on the uploaded document and server
+configuration.
+
+### Errors
+
+- `400 Bad Request` for missing fields, a non-DOCX file, or an invalid DOCX file.
+- `503 Service Unavailable` if document embeddings are not configured.
+- `502 Bad Gateway` if the embedding provider is unavailable or returns an
+  invalid response.
+
+The document is stored in SQLite before indexing. An indexing error can
+therefore return `502` or `503` after the document has been saved.
+
+## `GET /api/documents/{id}/`
+
+Returns one document and its extracted content.
+
+### Request
+
+Path parameters:
+
+- `id` (required integer): Document ID.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "id": 1,
+  "title": "Company profile",
+  "file": "http://127.0.0.1:8000/media/documents/company.docx",
+  "content": "The company office is in Tehran.",
+  "created_at": "2026-08-15T10:00:00+03:30",
+  "updated_at": "2026-08-15T10:00:00+03:30"
+}
+```
+
+### Errors
+
+- `404 Not Found` if the document does not exist.
+
+## `PUT /api/documents/{id}/`
+
+Replaces a document's writable fields and reindexes its extracted content.
+
+### Request
+
+Content type: `multipart/form-data`
+
+Path parameters:
+
+- `id` (required integer): Document ID.
+
+Form fields:
+
+- `title` (required string, maximum 255 characters): Document title.
+- `file` (required file): A valid file with a `.docx` extension.
+
+```sh
+curl -X PUT http://127.0.0.1:8000/api/documents/1/ \
+  -F 'title=Updated company profile' \
+  -F 'file=@sample_data/aria_company.docx'
+```
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "id": 1,
+  "title": "Updated company profile",
+  "file": "http://127.0.0.1:8000/media/documents/aria_company.docx",
+  "content": "معرفی شرکت آریا\nشرکت آریا در سال ۱۳۹۵ تأسیس شد.\nدفتر مرکزی شرکت در تهران قرار دارد.\nدر حال حاضر شرکت آریا ۱۲۰ نفر کارمند دارد.\nمحصول اصلی شرکت یک سامانه مدیریت منابع انسانی ابری است.\nمدیرعامل شرکت نسترن رضایی است.",
+  "created_at": "2026-08-15T10:00:00+03:30",
+  "updated_at": "2026-08-15T10:05:00+03:30"
+}
+```
+
+### Errors
+
+- `400 Bad Request` for missing or invalid fields.
+- `404 Not Found` if the document does not exist.
+- `503 Service Unavailable` if document embeddings are not configured.
+- `502 Bad Gateway` if the embedding provider is unavailable or returns an
+  invalid response.
+
+The database record is updated before indexing. An indexing error can therefore
+return `502` or `503` after the new values have been saved.
+
+## `PATCH /api/documents/{id}/`
+
+Updates the document title, file, or both. Replacing the file reindexes its
+content; changing only the title updates the indexed title metadata.
+
+### Request
+
+Path parameters:
+
+- `id` (required integer): Document ID.
+
+For a title-only update, use `application/json`:
+
+```json
+{
+  "title": "Updated company profile"
+}
+```
+
+For a file replacement, use `multipart/form-data`:
+
+```sh
+curl -X PATCH http://127.0.0.1:8000/api/documents/1/ \
+  -F 'file=@sample_data/aria_company.docx'
+```
+
+Both `title` (string, maximum 255 characters) and `file` (valid `.docx` file)
+are optional.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "id": 1,
+  "title": "Updated company profile",
+  "file": "http://127.0.0.1:8000/media/documents/aria_company.docx",
+  "content": "معرفی شرکت آریا\nشرکت آریا در سال ۱۳۹۵ تأسیس شد.\nدفتر مرکزی شرکت در تهران قرار دارد.\nدر حال حاضر شرکت آریا ۱۲۰ نفر کارمند دارد.\nمحصول اصلی شرکت یک سامانه مدیریت منابع انسانی ابری است.\nمدیرعامل شرکت نسترن رضایی است.",
+  "created_at": "2026-08-15T10:00:00+03:30",
+  "updated_at": "2026-08-15T10:05:00+03:30"
+}
+```
+
+### Errors
+
+- `400 Bad Request` for invalid fields.
+- `404 Not Found` if the document does not exist.
+- `503 Service Unavailable` if document embeddings are not configured.
+- `502 Bad Gateway` if the embedding provider is unavailable or returns an
+  invalid response.
+
+The database record is updated before the index. An indexing error can therefore
+return `502` or `503` after the new values have been saved.
+
+## `DELETE /api/documents/{id}/`
+
+Deletes a document and its indexed chunks.
+
+### Request
+
+Path parameters:
+
+- `id` (required integer): Document ID.
+
+### Response
+
+Status: `204 No Content` with an empty body.
+
+### Errors
+
+- `404 Not Found` if the document does not exist.
+- `503 Service Unavailable` if document embeddings are not configured.
+
+If index deletion fails, the database record is not deleted.
+
+## `POST /api/search/`
+
+Returns the nearest indexed document chunks for a natural-language query.
+
+### Request
+
+```json
+{
+  "query": "Where is the company office?",
+  "top_k": 4
+}
+```
+
+- `query` (required string): A non-empty search query.
+- `top_k` (optional integer): Number of results, from 1 to 20. Defaults to 4.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "query": "Where is the company office?",
   "results": [
     {
-      "text": "در حال حاضر شرکت آریا ۱۲۰ نفر کارمند دارد.",
+      "text": "The company office is in Tehran.",
       "document_id": 1,
-      "document_title": "گزارش شرکت آریا",
+      "document_title": "Company profile",
       "chunk_index": 0,
       "distance": 0.24
     }
@@ -167,53 +287,142 @@ curl -X POST http://127.0.0.1:8000/api/search/ \
 }
 ```
 
-`distance` is the vector-distance score returned by Chroma. It is not a
-probability or confidence percentage. Lower values indicate nearer vectors
-within the configured embedding space; values should not be compared across
-different embedding models or collection configurations.
+Results are ordered by vector distance. Lower distances indicate nearer matches;
+the value is not a probability. The API may return fewer than `top_k` results.
 
-## Question answering and history
+### Errors
 
-### `POST /api/questions/`
+- `400 Bad Request` if `query` or `top_k` is invalid.
+- `503 Service Unavailable` if document embeddings are not configured.
+- `502 Bad Gateway` if the embedding provider is unavailable or returns an
+  invalid response.
 
-Retrieves context, asks the configured OpenRouter generation model through
-LangChain, and saves a successful QuestionAnswer history row.
+## `GET /api/questions/`
 
-- Content type: `application/json`
-- Field: `question` (required non-empty string)
-- Success: `201 Created` with a QuestionAnswer object.
-- Errors: `400 Bad Request` for invalid input; `503 Service Unavailable` when an
-  OpenRouter key/embedding configuration is missing; `502 Bad Gateway` when the
-  embedding or answer provider fails.
+Lists saved question-and-answer records in newest-first order.
 
-Provider/configuration failures do not create QuestionAnswer history rows. When
-retrieval returns no chunks, generation is skipped and a deterministic
-no-information answer is saved with an empty `context_snapshot`.
+### Request
 
-```sh
-curl -X POST http://127.0.0.1:8000/api/questions/ \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"نیروی انسانی شرکت چند نفر است؟"}'
+Query parameters:
+
+- `page` (optional integer): Page number.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 1,
+      "question": "Where is the company office?",
+      "answer": "The company office is in Tehran.",
+      "context_snapshot": [
+        {
+          "document_id": 1,
+          "document_title": "Company profile",
+          "document_snapshot_updated_at": "2026-08-15T10:00:00+03:30",
+          "chunk_index": 0,
+          "text": "The company office is in Tehran."
+        }
+      ],
+      "created_at": "2026-08-15T10:01:00+03:30"
+    }
+  ]
+}
 ```
 
-### `GET /api/questions/`
+### Errors
 
-Lists saved QuestionAnswer history in newest-first order.
+- `404 Not Found` if `page` is invalid or outside the available range.
 
-- Success: `200 OK` with an array of QuestionAnswer objects.
+## `POST /api/questions/`
 
-```sh
-curl http://127.0.0.1:8000/api/questions/
+Retrieves document context, generates an answer, and saves the result in question
+history.
+
+### Request
+
+```json
+{
+  "question": "Where is the company office?"
+}
 ```
 
-### `GET /api/questions/{id}/`
+- `question` (required string): A non-empty question.
 
-Returns one saved QuestionAnswer, including its immutable-at-answer-time
-`context_snapshot`.
+### Response
 
-- Success: `200 OK` with a QuestionAnswer object.
-- Error: `404 Not Found` when the ID does not exist.
+Status: `201 Created`
 
-```sh
-curl http://127.0.0.1:8000/api/questions/1/
+```json
+{
+  "id": 1,
+  "question": "Where is the company office?",
+  "answer": "The company office is in Tehran.",
+  "context_snapshot": [
+    {
+      "document_id": 1,
+      "document_title": "Company profile",
+      "document_snapshot_updated_at": "2026-08-15T10:00:00+03:30",
+      "chunk_index": 0,
+      "text": "The company office is in Tehran."
+    }
+  ],
+  "created_at": "2026-08-15T10:01:00+03:30"
+}
 ```
+
+The answer is based only on the retrieved context. If no chunks are retrieved,
+the API saves the answer `No relevant information was found in the available
+documents.` with an empty `context_snapshot` and does not call the generation
+model.
+
+### Errors
+
+- `400 Bad Request` if `question` is missing, empty, or not a string.
+- `503 Service Unavailable` if the OpenRouter API key or embeddings are not
+  configured.
+- `502 Bad Gateway` if the embedding or answer provider is unavailable.
+
+Provider and configuration failures do not create a question-history record.
+
+## `GET /api/questions/{id}/`
+
+Returns one saved question-and-answer record with its captured document context.
+
+### Request
+
+Path parameters:
+
+- `id` (required integer): Question-and-answer record ID.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "id": 1,
+  "question": "Where is the company office?",
+  "answer": "The company office is in Tehran.",
+  "context_snapshot": [
+    {
+      "document_id": 1,
+      "document_title": "Company profile",
+      "document_snapshot_updated_at": "2026-08-15T10:00:00+03:30",
+      "chunk_index": 0,
+      "text": "The company office is in Tehran."
+    }
+  ],
+  "created_at": "2026-08-15T10:01:00+03:30"
+}
+```
+
+### Errors
+
+- `404 Not Found` if the record does not exist.
