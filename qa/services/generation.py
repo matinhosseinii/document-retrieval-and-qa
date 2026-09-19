@@ -69,7 +69,7 @@ def generate_answer(question: str, context_snapshot: list[dict]) -> str:
             temperature=settings.RAG_TEMPERATURE,
             max_tokens=settings.RAG_MAX_TOKENS,
             max_retries=settings.RAG_MAX_RETRIES,
-            timeout=settings.OPENROUTER_GENERATION_TIMEOUT,
+            timeout=settings.OPENROUTER_GENERATION_TIMEOUT_MS,
         )
         chain = prompt | model | StrOutputParser()
         answer = chain.invoke(

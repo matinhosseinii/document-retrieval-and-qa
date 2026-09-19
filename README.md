@@ -45,7 +45,7 @@ The example values are suitable for local development. Available variables are:
 | `OPENROUTER_API_KEY` | OpenRouter credential used for embeddings and answer generation. |
 | `OPENROUTER_MODEL` | OpenRouter model used to generate answers. |
 | `OPENROUTER_EMBEDDING_MODEL` | OpenRouter model used to embed documents and queries. |
-| `OPENROUTER_GENERATION_TIMEOUT` | Answer-generation timeout in seconds. |
+| `OPENROUTER_GENERATION_TIMEOUT_MS` | Answer-generation timeout in milliseconds. |
 | `OPENROUTER_EMBEDDING_TIMEOUT_MS` | Embedding-request timeout in milliseconds. |
 | `OPENROUTER_EMBEDDING_RETRIES` | Number of retries for failed embedding requests. |
 | `RAG_TOP_K` | Number of passages retrieved for each question. |

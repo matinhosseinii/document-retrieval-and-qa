@@ -249,6 +249,7 @@ class GenerationServiceTests(TestCase):
     @override_settings(
         OPENROUTER_API_KEY="test-placeholder-key",
         OPENROUTER_MODEL="openrouter/free",
+        OPENROUTER_GENERATION_TIMEOUT_MS=30000,
     )
     @patch("qa.services.generation.ChatOpenRouter")
     def test_current_chat_openrouter_chain_receives_grounded_context(self, model_class):
