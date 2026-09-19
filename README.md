@@ -64,8 +64,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose applies database migrations automatically. The server listens at
-<http://127.0.0.1:8000/>, with application APIs under `/api/`.
+Compose applies database migrations automatically, then starts Gunicorn with
+one synchronous worker. The server listens at <http://127.0.0.1:8000/>, with
+application APIs under `/api/`.
 
 ## Running Locally
 
@@ -94,7 +95,8 @@ python manage.py runserver
 ```
 
 The server listens at <http://127.0.0.1:8000/>, with application APIs under
-`/api/`.
+`/api/`. The Django development server remains suitable for local development;
+Docker uses Gunicorn.
 
 ## Tests
 

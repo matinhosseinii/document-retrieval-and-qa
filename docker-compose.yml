@@ -1,7 +1,7 @@
 services:
   web:
     build: .
-    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    command: sh -c "python manage.py migrate && exec gunicorn --bind 0.0.0.0:8000 --workers 1 config.wsgi:application"
     ports:
       - "8000:8000"
     env_file:
