@@ -101,6 +101,13 @@ The server listens at <http://127.0.0.1:8000/>, with application APIs under
 `/api/`. The Django development server remains suitable for local development;
 Docker uses Gunicorn.
 
+## Operational Health
+
+`GET` and `HEAD` requests to `/health/live/` report process liveness without
+checking dependencies. `/health/ready/` checks the relational database and the
+local Chroma store. Neither endpoint requires an OpenRouter API key or makes an
+external network request.
+
 ## Tests
 
 ```sh
