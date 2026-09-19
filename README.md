@@ -40,6 +40,7 @@ The example values are suitable for local development. Available variables are:
 | `DJANGO_DEBUG` | Enables Django debug mode. |
 | `DJANGO_ALLOWED_HOSTS` | Comma-separated hostnames accepted by Django. |
 | `DJANGO_DB_PATH` | Path to the SQLite database file. |
+| `DJANGO_STATIC_ROOT` | Directory where deployment static assets are collected. Defaults to `staticfiles/`; the Docker image uses `/staticfiles`. |
 | `DJANGO_TIME_ZONE` | Time zone used by Django. |
 | `OPENROUTER_API_KEY` | OpenRouter credential used for embeddings and answer generation. |
 | `OPENROUTER_MODEL` | OpenRouter model used to generate answers. |
@@ -66,7 +67,9 @@ docker compose up --build
 
 Compose applies database migrations automatically, then starts Gunicorn with
 one synchronous worker. The server listens at <http://127.0.0.1:8000/>, with
-application APIs under `/api/`.
+application APIs under `/api/`. The Docker image collects static assets at build
+time into `/staticfiles`, outside the `/app` bind mount, and WhiteNoise serves
+them through Gunicorn.
 
 ## Running Locally
 

@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 db.sqlite3
+staticfiles/
 data/chroma/
 media/*
 !media/.gitkeep
